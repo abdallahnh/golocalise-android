@@ -5,7 +5,7 @@ The Android/Kotlin library implements GoLocalise OTA protocol v1 for Android API
 `mavenCentral()` is in your dependency repositories, then add:
 
 ```kotlin
-implementation("me.golocalise:golocalise-android:1.1.0")
+implementation("me.golocalise:golocalise-android:1.1.1")
 ```
 
 Create one long-lived client:
