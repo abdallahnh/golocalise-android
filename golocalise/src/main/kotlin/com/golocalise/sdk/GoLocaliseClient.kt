@@ -123,7 +123,7 @@ public class GoLocaliseClient(private val configuration: GoLocaliseConfiguration
     namespace: String = "default",
     arguments: List<String>,
     fallback: String? = null,
-  ): String = formatAndroidMessage(translation(key, namespace, fallback), arguments)
+  ): String = formatAndroidMessage(translation(key, namespace, fallback), arguments, currentLocale)
 
   public fun namespaces(): List<String> = synchronized(stateLock) {
     state?.artifact?.namespaces?.keys.orEmpty().sorted()
@@ -166,7 +166,7 @@ public class GoLocaliseClient(private val configuration: GoLocaliseConfiguration
       ?: plural.forms["other"] ?: fallback ?: key
     val withCount = replaceNamedToken(selected, plural.variable, displayCount(count))
       ?: return selected
-    return if (arguments.isEmpty()) withCount else formatAndroidMessage(withCount, arguments)
+    return if (arguments.isEmpty()) withCount else formatAndroidMessage(withCount, arguments, locale)
   }
 
   private suspend fun loadCache(locale: String) {
@@ -303,7 +303,8 @@ private fun replaceNamedToken(message: String, name: String, value: String): Str
         val token = message.substring(index + 1, closing)
         when {
           token == name -> output.append(value)
-          token.toIntOrNull() != null -> output.append('{').append(token).append('}')
+          token.toIntOrNull() != null || typedIndexToken.matches(token) ->
+            output.append('{').append(token).append('}')
           else -> return null
         }
         index = closing + 1
@@ -316,8 +317,8 @@ private fun replaceNamedToken(message: String, name: String, value: String): Str
   return output.toString()
 }
 
-private fun formatAndroidMessage(message: String, arguments: List<String>): String {
-  if ('{' in message || '}' in message) return formatCanonicalMessage(message, arguments)
+private fun formatAndroidMessage(message: String, arguments: List<String>, locale: String): String {
+  if ('{' in message || '}' in message) return formatCanonicalMessage(message, arguments, locale)
   var index = 0
   var sequential = 0
   val positional = mutableSetOf<Int>()
@@ -348,8 +349,23 @@ private fun formatAndroidMessage(message: String, arguments: List<String>): Stri
   return String.format(Locale.ROOT, message, *arguments.toTypedArray())
 }
 
-private fun formatCanonicalMessage(message: String, arguments: List<String>): String {
-  val pattern = Regex("\\{(\\d+)\\}")
+// Typed placeholders: `{0}` inserts the argument as text, `{0:number}` formats it as
+// an integer and `{0:decimal:2}` as a fixed-decimal number, using the client locale.
+// Anything that is not a number is inserted unchanged.
+private val canonicalTokenPattern = Regex("\\{(\\d+)(?::(?:(number)|decimal:(\\d)))?\\}")
+private val typedIndexToken = Regex("\\d+:(?:number|decimal:\\d)")
+
+private fun formatNumberArgument(text: String, fractionDigits: Int, locale: String): String {
+  val number = text.trim().toDoubleOrNull() ?: return text
+  if (!number.isFinite()) return text
+  val format = java.text.NumberFormat.getNumberInstance(Locale.forLanguageTag(locale))
+  format.minimumFractionDigits = fractionDigits
+  format.maximumFractionDigits = fractionDigits
+  return format.format(number)
+}
+
+private fun formatCanonicalMessage(message: String, arguments: List<String>, locale: String): String {
+  val pattern = canonicalTokenPattern
   val indexes = pattern.findAll(message).map { it.groupValues[1].toInt() }.toSet()
   val withoutTokens = pattern.replace(message, "")
   val oneBased = indexes.isNotEmpty() && 0 !in indexes && indexes.minOrNull() == 1 && indexes.maxOrNull() == arguments.size
@@ -357,7 +373,13 @@ private fun formatCanonicalMessage(message: String, arguments: List<String>): St
   if ('{' in withoutTokens || '}' in withoutTokens || indexes != expected) return message
   return pattern.replace(message) { match ->
     val index = match.groupValues[1].toInt() - if (oneBased) 1 else 0
-    arguments.getOrNull(index) ?: match.value
+    val argument = arguments.getOrNull(index) ?: return@replace match.value
+    when {
+      match.groupValues[2].isNotEmpty() -> formatNumberArgument(argument, 0, locale)
+      match.groupValues[3].isNotEmpty() ->
+        formatNumberArgument(argument, match.groupValues[3].toInt(), locale)
+      else -> argument
+    }
   }
 }
 

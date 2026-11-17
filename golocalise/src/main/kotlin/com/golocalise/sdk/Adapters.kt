@@ -109,3 +109,54 @@ public class AndroidResourcesBundledTranslations(
 
 internal fun String.sha256(): String = MessageDigest.getInstance("SHA-256")
   .digest(toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+/**
+ * Bundled translations from CI/CD export files of build-only namespaces.
+ *
+ * The pipeline writes one JSON file per namespace (`checkout.json`, …) from
+ * `GET /api/v1/projects/{id}/translations?environment=…&namespace=…&format=json`
+ * into the app's assets. Build-only namespaces are not in OTA releases, so
+ * lookups fall through to these strings.
+ *
+ * @param files namespace → export file contents (JSON text).
+ */
+public class ExportedBundledTranslations(files: Map<String, String>) : BundledTranslationAdapter {
+  /** namespace → locale ("*" for single-language files) → key → text */
+  private val values: Map<String, Map<String, Map<String, String>>> =
+    files.mapValues { (_, json) -> parseTranslationExport(json) }
+
+  override fun translation(locale: String, namespace: String, key: String): String? {
+    val byLocale = values[namespace] ?: return null
+    return byLocale[locale]?.get(key) ?: byLocale["*"]?.get(key)
+  }
+
+  public companion object {
+    /** Loads every `*.json` file in `directory` of the app assets; the file name is the namespace. */
+    @JvmStatic
+    @JvmOverloads
+    public fun fromAssets(
+      assets: android.content.res.AssetManager,
+      directory: String = "golocalise",
+    ): ExportedBundledTranslations = ExportedBundledTranslations(
+      (assets.list(directory) ?: emptyArray())
+        .filter { it.endsWith(".json") }
+        .associate { name ->
+          name.removeSuffix(".json") to assets.open("$directory/$name").bufferedReader().use { it.readText() }
+        },
+    )
+  }
+}
+
+internal fun parseTranslationExport(json: String): Map<String, Map<String, String>> {
+  val root = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(json) }.getOrNull()
+    as? kotlinx.serialization.json.JsonObject ?: return emptyMap()
+  fun strings(element: kotlinx.serialization.json.JsonElement?): Map<String, String> =
+    (element as? kotlinx.serialization.json.JsonObject)
+      ?.mapNotNull { (key, value) ->
+        (value as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.let { key to it.content }
+      }
+      ?.toMap()
+      .orEmpty()
+  val data = root["data"] as? kotlinx.serialization.json.JsonObject
+  return if (data != null) data.mapValues { (_, locale) -> strings(locale) } else mapOf("*" to strings(root))
+}

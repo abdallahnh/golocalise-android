@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "me.golocalise"
-version = "1.0.0"
+version = "1.1.0"
 
 android {
   namespace = "com.golocalise.sdk"
@@ -53,7 +53,7 @@ publishing {
     register<MavenPublication>("release") {
       groupId = "me.golocalise"
       artifactId = "golocalise-android"
-      version = "1.0.0"
+      version = "1.1.0"
 
       afterEvaluate {
         from(components["release"])
@@ -100,14 +100,31 @@ publishing {
       name = "localRelease"
       url = uri(layout.buildDirectory.dir("maven-repository"))
     }
+    providers.environmentVariable("MAVEN_RELEASE_URL").orNull?.let { releaseUrl ->
+      maven {
+        name = "release"
+        url = uri(releaseUrl)
+        credentials {
+          username = providers.environmentVariable("MAVEN_USERNAME").orNull
+          password = providers.environmentVariable("MAVEN_PASSWORD").orNull
+        }
+      }
+    }
   }
 }
 
+val releaseSigningEnabled = providers.gradleProperty("releaseSigning")
+  .map(String::toBoolean)
+  .orElse(false)
+
 signing {
-  useGpgCmd()
-  sign(publishing.publications["release"])
+  isRequired = releaseSigningEnabled.get()
+  if (releaseSigningEnabled.get()) {
+    useGpgCmd()
+    sign(publishing.publications["release"])
+  }
 }
 
 tasks.withType<Sign>().configureEach {
-  onlyIf { gradle.taskGraph.allTasks.any { task -> task.name.contains("Publication") } }
+  onlyIf { releaseSigningEnabled.get() }
 }

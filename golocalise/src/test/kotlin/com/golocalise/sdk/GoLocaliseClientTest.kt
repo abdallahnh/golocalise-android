@@ -133,6 +133,21 @@ public class GoLocaliseClientTest {
   }
 
   @Test
+  public fun typedPlaceholdersFormatNumbersWithTheClientLocale() {
+    val bundled = MapBundledTranslations(mapOf("en" to mapOf("default" to mapOf(
+      "items" to "You have {0:number} items",
+      "total" to "Total {0:decimal:2}",
+      "mixed" to "{1:number} of {0}",
+      "text" to "{0:number}",
+    ))))
+    val client = client(QueueTransport(), bundled = bundled)
+    assertEquals("You have 1,234 items", client.translation("items", arguments = listOf("1234")))
+    assertEquals("Total 5.00", client.translation("total", arguments = listOf("5")))
+    assertEquals("7 of x", client.translation("mixed", arguments = listOf("x", "7")))
+    assertEquals("abc", client.translation("text", arguments = listOf("abc")))
+  }
+
+  @Test
   public fun localeAwarePluralFormattingUsesOtaCache(): Unit = runTest {
     val plural = OtaPluralMessage(
       variable = "count",
@@ -380,4 +395,20 @@ public class GoLocaliseClientTest {
 
   private fun ByteArray.hash(): String = "sha256:" + MessageDigest.getInstance("SHA-256")
     .digest(this).joinToString("") { "%02x".format(it) }
+}
+
+class ExportedBundledTranslationsTest {
+  @org.junit.Test
+  fun readsExportFilesByNamespace() {
+    val bundled = ExportedBundledTranslations(
+      mapOf(
+        "checkout" to """{"data":{"en-US":{"pay_now":"Pay now"},"ar":{"pay_now":"ادفع الآن"}},"meta":{}}""",
+        "legal" to """{"terms":"Terms"}""",
+      ),
+    )
+    org.junit.Assert.assertEquals("ادفع الآن", bundled.translation("ar", "checkout", "pay_now"))
+    org.junit.Assert.assertEquals("Pay now", bundled.translation("en-US", "checkout", "pay_now"))
+    org.junit.Assert.assertEquals("Terms", bundled.translation("ar", "legal", "terms"))
+    org.junit.Assert.assertNull(bundled.translation("en-US", "checkout", "missing"))
+  }
 }
