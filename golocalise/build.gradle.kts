@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "me.golocalise"
-version = "1.1.1"
+version = "1.2.0"
 
 android {
   namespace = "com.golocalise.sdk"
@@ -53,7 +53,7 @@ publishing {
     register<MavenPublication>("release") {
       groupId = "me.golocalise"
       artifactId = "golocalise-android"
-      version = "1.1.1"
+      version = "1.2.0"
 
       afterEvaluate {
         from(components["release"])

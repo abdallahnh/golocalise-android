@@ -5,7 +5,7 @@ The Android/Kotlin library implements GoLocalise OTA protocol v1 for Android API
 `mavenCentral()` is in your dependency repositories, then add:
 
 ```kotlin
-implementation("me.golocalise:golocalise-android:1.1.1")
+implementation("me.golocalise:golocalise-android:1.2.0")
 ```
 
 Create one long-lived client:
@@ -42,6 +42,13 @@ atomic cache replacement. Failures preserve last-known-good OTA content and
 bundled resources. The runnable `:sample` module is a configuration-driven Compose
 demo with release status, supported-locale switching, search, namespace filtering,
 explicit refresh, `LazyColumn` rendering, and RTL support.
+
+## Text that does not fit the arguments (1.2.0)
+
+`translation(key, arguments)` and plural forms skip release text whose
+placeholders do not fit the arguments of the bundled text, and use the bundled
+text (then the fallback) instead of showing a raw `%2$s` or `{1}`. In `{0}`
+text, an existing `%%` (already escaped) shows as one `%`.
 
 ## Build-only namespaces
 

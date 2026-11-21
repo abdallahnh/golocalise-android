@@ -133,6 +133,36 @@ public class GoLocaliseClientTest {
   }
 
   @Test
+  public fun releaseTextThatDoesNotFitTheArgumentsFallsBackToBundledText(): Unit = runTest {
+    val transport = QueueTransport()
+    val english = release(1, "en", "Between {0} and {1}")
+    transport.enqueue(Stub.Response(english.manifest), Stub.Response(english.artifact))
+    val client = client(
+      transport,
+      bundled = MapBundledTranslations(mapOf("en" to mapOf(fixture.namespace to mapOf(fixture.key to "At least %1\$s")))),
+    )
+    assertEquals(RefreshResult.Updated(1), client.initialize())
+    assertEquals("At least 5", client.translation(fixture.key, fixture.namespace, arguments = listOf("5")))
+    assertEquals("Between 1 and 2", client.translation(fixture.key, fixture.namespace, arguments = listOf("1", "2")))
+    assertEquals(
+      "Minimum 5",
+      client.translation("missing", fixture.namespace, arguments = listOf("5"), fallback = "Minimum %s"),
+    )
+  }
+
+  @Test
+  public fun escapedPercentInCanonicalTextIsOneLiteralPercent() {
+    val bundled = MapBundledTranslations(mapOf("en" to mapOf("default" to mapOf(
+      "discount_top" to "{0}%% off up to {1}",
+      "plain" to "{0}% off",
+    ))))
+    val client = client(QueueTransport(), bundled = bundled)
+    assertEquals("10% off up to \$5", client.translation("discount_top", arguments = listOf("10", "\$5")))
+    assertEquals("10% off", client.translation("plain", arguments = listOf("10")))
+    assertEquals("argument text is not changed", "50%% off% off", client.translation("plain", arguments = listOf("50%% off")))
+  }
+
+  @Test
   public fun typedPlaceholdersFormatNumbersWithTheClientLocale() {
     val bundled = MapBundledTranslations(mapOf("en" to mapOf("default" to mapOf(
       "items" to "You have {0:number} items",

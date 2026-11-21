@@ -118,12 +118,27 @@ public class GoLocaliseClient(private val configuration: GoLocaliseConfiguration
     return ota ?: configuration.bundled?.translation(locale, namespace, key) ?: fallback ?: key
   }
 
+  /**
+   * The text of [key] formatted with [arguments]. Release text whose placeholders do not
+   * fit [arguments] (a `%2$s` or `{1}` the app does not pass) is skipped for the bundled
+   * text, then [fallback], so a release never shows a raw placeholder. When none fits,
+   * the first text is returned unformatted, as before.
+   */
   public fun translation(
     key: String,
     namespace: String = "default",
     arguments: List<String>,
     fallback: String? = null,
-  ): String = formatAndroidMessage(translation(key, namespace, fallback), arguments, currentLocale)
+  ): String {
+    val (locale, ota) = synchronized(stateLock) {
+      activeLocale to state?.artifact?.namespaces?.get(namespace)?.get(key)
+    }
+    val candidates = listOfNotNull(ota, configuration.bundled?.translation(locale, namespace, key), fallback)
+    for (candidate in candidates) {
+      formatAndroidMessageOrNull(candidate, arguments, locale)?.let { return it }
+    }
+    return candidates.firstOrNull() ?: key
+  }
 
   public fun namespaces(): List<String> = synchronized(stateLock) {
     state?.artifact?.namespaces?.keys.orEmpty().sorted()
@@ -160,13 +175,20 @@ public class GoLocaliseClient(private val configuration: GoLocaliseConfiguration
     }
     val bundledPlural = (configuration.bundled as? BundledPluralTranslationAdapter)
       ?.pluralTranslation(locale, namespace, key)
-    val plural = otaPlural ?: bundledPlural
-      ?: return translation(key, namespace, arguments, fallback)
-    val selected = plural.forms[pluralCategory(locale, count)]
-      ?: plural.forms["other"] ?: fallback ?: key
-    val withCount = replaceNamedToken(selected, plural.variable, displayCount(count))
-      ?: return selected
-    return if (arguments.isEmpty()) withCount else formatAndroidMessage(withCount, arguments, locale)
+    val plurals = listOfNotNull(otaPlural, bundledPlural)
+    if (plurals.isEmpty()) return translation(key, namespace, arguments, fallback)
+    val category = pluralCategory(locale, count)
+    var first: String? = null
+    // A release plural that does not fit [arguments] is skipped for the bundled one.
+    for (plural in plurals) {
+      val selected = plural.forms[category] ?: plural.forms["other"] ?: fallback ?: key
+      val withCount = replaceNamedToken(selected, plural.variable, displayCount(count))
+      if (first == null) first = withCount ?: selected
+      withCount ?: continue
+      if (arguments.isEmpty()) return withCount
+      formatAndroidMessageOrNull(withCount, arguments, locale)?.let { return it }
+    }
+    return first ?: key
   }
 
   private suspend fun loadCache(locale: String) {
@@ -317,34 +339,35 @@ private fun replaceNamedToken(message: String, name: String, value: String): Str
   return output.toString()
 }
 
-private fun formatAndroidMessage(message: String, arguments: List<String>, locale: String): String {
-  if ('{' in message || '}' in message) return formatCanonicalMessage(message, arguments, locale)
+/** [message] formatted with [arguments], or `null` when its placeholders do not fit them. */
+private fun formatAndroidMessageOrNull(message: String, arguments: List<String>, locale: String): String? {
+  if ('{' in message || '}' in message) return formatCanonicalMessageOrNull(message, arguments, locale)
   var index = 0
   var sequential = 0
   val positional = mutableSetOf<Int>()
   while (index < message.length) {
     if (message[index] != '%') { index++; continue }
     index++
-    if (index >= message.length) return message
+    if (index >= message.length) return null
     if (message[index] == '%') { index++; continue }
     val start = index
     while (index < message.length && message[index].isDigit()) index++
     if (index > start) {
-      if (index >= message.length || message[index] != '$') return message
-      val position = message.substring(start, index).toIntOrNull() ?: return message
+      if (index >= message.length || message[index] != '$') return null
+      val position = message.substring(start, index).toIntOrNull() ?: return null
       index++
-      if (position < 1 || index >= message.length || message[index] != 's') return message
+      if (position < 1 || index >= message.length || message[index] != 's') return null
       positional += position
     } else {
-      if (message[index] != 's') return message
+      if (message[index] != 's') return null
       sequential++
     }
     index++
   }
-  if (sequential > 0 && positional.isNotEmpty()) return message
+  if (sequential > 0 && positional.isNotEmpty()) return null
   val count = if (positional.isEmpty()) sequential else positional.maxOrNull() ?: 0
   if (count != arguments.size || (positional.isNotEmpty() && positional != (1..count).toSet())) {
-    return message
+    return null
   }
   return String.format(Locale.ROOT, message, *arguments.toTypedArray())
 }
@@ -364,23 +387,35 @@ private fun formatNumberArgument(text: String, fractionDigits: Int, locale: Stri
   return format.format(number)
 }
 
-private fun formatCanonicalMessage(message: String, arguments: List<String>, locale: String): String {
+/**
+ * `{0}` text formatted with [arguments], or `null` when its tokens do not fit them. A `%%`
+ * (text written already escaped, `{0}%% off`) is one literal `%`, as in the exports.
+ */
+private fun formatCanonicalMessageOrNull(message: String, arguments: List<String>, locale: String): String? {
   val pattern = canonicalTokenPattern
   val indexes = pattern.findAll(message).map { it.groupValues[1].toInt() }.toSet()
   val withoutTokens = pattern.replace(message, "")
   val oneBased = indexes.isNotEmpty() && 0 !in indexes && indexes.minOrNull() == 1 && indexes.maxOrNull() == arguments.size
   val expected = if (oneBased) arguments.indices.map { it + 1 }.toSet() else arguments.indices.toSet()
-  if ('{' in withoutTokens || '}' in withoutTokens || indexes != expected) return message
-  return pattern.replace(message) { match ->
+  if ('{' in withoutTokens || '}' in withoutTokens || indexes != expected) return null
+  val output = StringBuilder()
+  var last = 0
+  for (match in pattern.findAll(message)) {
+    output.append(message.substring(last, match.range.first).replace("%%", "%"))
     val index = match.groupValues[1].toInt() - if (oneBased) 1 else 0
-    val argument = arguments.getOrNull(index) ?: return@replace match.value
-    when {
-      match.groupValues[2].isNotEmpty() -> formatNumberArgument(argument, 0, locale)
-      match.groupValues[3].isNotEmpty() ->
-        formatNumberArgument(argument, match.groupValues[3].toInt(), locale)
-      else -> argument
-    }
+    val argument = arguments.getOrNull(index) ?: return null
+    output.append(
+      when {
+        match.groupValues[2].isNotEmpty() -> formatNumberArgument(argument, 0, locale)
+        match.groupValues[3].isNotEmpty() ->
+          formatNumberArgument(argument, match.groupValues[3].toInt(), locale)
+        else -> argument
+      },
+    )
+    last = match.range.last + 1
   }
+  output.append(message.substring(last).replace("%%", "%"))
+  return output.toString()
 }
 
 private fun ByteArray.sha256(): String = "sha256:" + MessageDigest.getInstance("SHA-256")
